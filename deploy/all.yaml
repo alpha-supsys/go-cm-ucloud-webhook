@@ -1,0 +1,286 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: udns-webhook
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: udns-webhook
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+rules:
+  - apiGroups:
+      - ''
+    resources:
+      - 'secrets'
+    verbs:
+      - 'get'
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: udns-webhook
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: udns-webhook
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: udns-webhook
+    namespace: cert-manager
+
+---
+# Grant the webhook permission to read the ConfigMap containing the Kubernetes
+# apiserver's requestheader-ca-certificate.
+# This ConfigMap is automatically created by the Kubernetes apiserver.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: udns-webhook:webhook-authentication-reader
+  namespace: kube-system
+  labels:
+    app: udns-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: udns-webhook
+    namespace: cert-manager
+---
+# apiserver gets the auth-delegator role to delegate auth decisions to
+# the core apiserver
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: udns-webhook:auth-delegator
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: udns-webhook
+    namespace: cert-manager
+---
+# Grant cert-manager permission to validate using our apiserver
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: udns-webhook:domain-solver
+  labels:
+    app: udns-webhook
+rules:
+  - apiGroups:
+      - acme.yourcompany.com
+    resources:
+      - '*'
+    verbs:
+      - 'create'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: udns-webhook:domain-solver
+  labels:
+    app: udns-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: udns-webhook:domain-solver
+subjects:
+  - apiGroup: ""
+    kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+
+---
+# Source: alidns-webhook/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: udns-webhook
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app: udns-webhook
+
+---
+# Source: alidns-webhook/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: udns-webhook
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  replicas:
+  selector:
+    matchLabels:
+      app: udns-webhook
+  template:
+    metadata:
+      labels:
+        app: udns-webhook
+    spec:
+      serviceAccountName: udns-webhook
+      containers:
+        - name: udns-webhook
+          image: uhub.service.ucloud.cn/alpha_supsys/go-cm-ucloud-webhook:beta_0.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --tls-cert-file=/tls/tls.crt
+            - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: UWH_GROUP_NAME
+              value: acme.yourcompany.com
+            - name: UWH_Namespace
+              value: cert-manager
+            - name: UWH_SecretName
+              value: uwh-secret
+          ports:
+            - name: https
+              containerPort: 443
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          volumeMounts:
+            - name: certs
+              mountPath: /tls
+              readOnly: true
+          resources:
+            {}
+
+      volumes:
+        - name: certs
+          secret:
+            secretName: udns-webhook-webhook-tls
+
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.acme.yourcompany.com
+  labels:
+    app: udns-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: "cert-manager/udns-webhook-webhook-tls"
+spec:
+  group: acme.yourcompany.com
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: udns-webhook
+    namespace: cert-manager
+  version: v1alpha1
+
+---
+# Create a selfsigned Issuer, in order to create a root CA certificate for
+# signing webhook serving certificates
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: udns-webhook-selfsign
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  selfSigned: {}
+
+---
+
+# Generate a CA Certificate used to sign certificates for the webhook
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: udns-webhook-ca
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  secretName: udns-webhook-ca
+  duration: 43800h # 5y
+  issuerRef:
+    name: udns-webhook-selfsign
+  commonName: "ca.udns-webhook.cert-manager"
+  isCA: true
+
+---
+
+# Create an Issuer that uses the above generated CA certificate to issue certs
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: udns-webhook-ca
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  ca:
+    secretName: udns-webhook-ca
+
+---
+
+# Finally, generate a serving certificate for the webhook to use
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: udns-webhook-webhook-tls
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  secretName: udns-webhook-webhook-tls
+  duration: 8760h # 1y
+  issuerRef:
+    name: udns-webhook-ca
+  dnsNames:
+  - udns-webhook
+  - udns-webhook.cert-manager
+  - udns-webhook.cert-manager.svc
+  - udns-webhook.cert-manager.svc.cluster.local
+
+kind: Secret
+apiVersion: v1
+metadata:
+  name: uwh-secret
+  namespace: cert-manager
+data:
+  pk: yourPrivatekeyBase64
+  puk: yourPublickeyBase64
+type: Opaque

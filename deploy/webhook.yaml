@@ -1,0 +1,95 @@
+# Source: alidns-webhook/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: udns-webhook
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  type: ClusterIP
+  ports:
+    - port: 443
+      targetPort: https
+      protocol: TCP
+      name: https
+  selector:
+    app: udns-webhook
+
+---
+# Source: alidns-webhook/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: udns-webhook
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  replicas:
+  selector:
+    matchLabels:
+      app: udns-webhook
+  template:
+    metadata:
+      labels:
+        app: udns-webhook
+    spec:
+      serviceAccountName: udns-webhook
+      containers:
+        - name: udns-webhook
+          image: uhub.service.ucloud.cn/alpha_supsys/go-cm-ucloud-webhook:beta_0.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --tls-cert-file=/tls/tls.crt
+            - --tls-private-key-file=/tls/tls.key
+          env:
+            - name: UWH_GROUP_NAME
+              value: acme.yourcompany.com
+            - name: UWH_Namespace
+              value: cert-manager
+            - name: UWH_SecretName
+              value: uwh-secret
+          ports:
+            - name: https
+              containerPort: 443
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+          volumeMounts:
+            - name: certs
+              mountPath: /tls
+              readOnly: true
+          resources:
+            {}
+
+      volumes:
+        - name: certs
+          secret:
+            secretName: udns-webhook-webhook-tls
+
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.acme.yourcompany.com
+  labels:
+    app: udns-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: "cert-manager/udns-webhook-webhook-tls"
+spec:
+  group: acme.yourcompany.com
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: udns-webhook
+    namespace: cert-manager
+  version: v1alpha1

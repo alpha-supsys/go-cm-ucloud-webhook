@@ -1,0 +1,64 @@
+# Create a selfsigned Issuer, in order to create a root CA certificate for
+# signing webhook serving certificates
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: udns-webhook-selfsign
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  selfSigned: {}
+
+---
+
+# Generate a CA Certificate used to sign certificates for the webhook
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: udns-webhook-ca
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  secretName: udns-webhook-ca
+  duration: 43800h # 5y
+  issuerRef:
+    name: udns-webhook-selfsign
+  commonName: "ca.udns-webhook.cert-manager"
+  isCA: true
+
+---
+
+# Create an Issuer that uses the above generated CA certificate to issue certs
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: udns-webhook-ca
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  ca:
+    secretName: udns-webhook-ca
+
+---
+
+# Finally, generate a serving certificate for the webhook to use
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: udns-webhook-webhook-tls
+  namespace: cert-manager
+  labels:
+    app: udns-webhook
+spec:
+  secretName: udns-webhook-webhook-tls
+  duration: 8760h # 1y
+  issuerRef:
+    name: udns-webhook-ca
+  dnsNames:
+  - udns-webhook
+  - udns-webhook.cert-manager
+  - udns-webhook.cert-manager.svc
+  - udns-webhook.cert-manager.svc.cluster.local
